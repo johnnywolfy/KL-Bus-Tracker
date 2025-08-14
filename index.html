@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>KL Bus Tracker - Functional App</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- JSZip for unzipping GTFS static data -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- PapaParse for parsing CSV files -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            overscroll-behavior-y: contain;
+        }
+        /* Basic view management */
+        .view { display: none; }
+        .view.active { display: block; }
+
+        /* Smooth transitions for popups */
+        .bottom-sheet {
+            transition: transform 0.3s ease-in-out;
+            transform: translateY(100%);
+        }
+        .bottom-sheet.active { transform: translateY(0); }
+        .stops-accordion {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-in-out;
+        }
+        .stops-accordion.open { max-height: 500px; }
+        
+        /* Loading overlay */
+        #loading-overlay {
+            transition: opacity 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-800">
+
+    <div class="max-w-md mx-auto bg-white min-h-screen flex flex-col relative">
+
+        <!-- ===== Main Content Area ===== -->
+        <main class="flex-grow">
+            <!-- ===== View 1: Map Page ===== -->
+            <div id="map-view" class="view active h-full">
+                <div class="relative h-full">
+                    <!-- Search Bar -->
+                    <div class="absolute top-0 left-0 right-0 p-4 z-10">
+                        <div class="relative">
+                            <input id="search-input" type="text" placeholder="Search for a bus number (e.g., 173)" class="w-full pl-10 pr-4 py-3 bg-white rounded-full shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <i class="fas fa-search absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"></i>
+                        </div>
+                    </div>
+
+                    <!-- Map Placeholder -->
+                    <img src="https://placehold.co/600x1200/a0aec0/4a5568?text=Live+Map+View" alt="Map of Kuala Lumpur" class="w-full h-full object-cover">
+
+                    <!-- Map Icons will be rendered here by JS -->
+                    <div id="map-icons"></div>
+                </div>
+            </div>
+
+            <!-- ===== View 2: Search Results Page ===== -->
+            <div id="search-view" class="view p-4">
+                <h2 class="text-2xl font-bold mb-4">Search Results</h2>
+                <div id="search-results-list" class="space-y-3">
+                    <!-- JS will populate this -->
+                </div>
+            </div>
+
+            <!-- ===== View 3: Route Detail Page ===== -->
+            <div id="detail-view" class="view">
+                <div class="relative h-1/2">
+                     <button onclick="showView('map-view')" class="absolute top-4 left-4 z-10 bg-white rounded-full p-2 shadow-md h-10 w-10 flex items-center justify-center">
+                        <i class="fas fa-arrow-left text-gray-700"></i>
+                    </button>
+                    <img id="detail-map-img" src="https://placehold.co/600x600/a0aec0/4a5568?text=Route+Map" alt="Route Map" class="w-full h-full object-cover">
+                    <!-- Bus icon on detail map -->
+                    <div id="detail-map-bus-icon" class="absolute" style="top: 60%; left: 40%;">
+                        <div class="p-2 bg-blue-600 rounded-full shadow-xl animate-pulse">
+                            <i class="fas fa-bus text-white"></i>
+                        </div>
+                    </div>
+                </div>
+                <div class="p-4 bg-white -mt-4 rounded-t-2xl h-1/2 flex flex-col">
+                    <div class="mb-4" id="detail-bus-info">
+                        <!-- Bus details will be rendered here -->
+                    </div>
+                    <h4 class="font-semibold mb-2">Full Stop List</h4>
+                    <ul id="detail-stop-list" class="flex-grow overflow-y-auto space-y-2">
+                        <!-- JS will populate this -->
+                    </ul>
+                </div>
+            </div>
+        </main>
+
+        <!-- ===== Bottom Navigation ===== -->
+        <footer class="sticky bottom-0 bg-white shadow-t-lg border-t border-gray-200 z-20">
+            <nav id="bottom-nav" class="flex justify-around">
+                <button data-view="map-view" class="flex-1 text-blue-600 p-3 text-center">
+                    <i class="fas fa-map-marked-alt text-xl"></i><span class="block text-xs font-medium">Map</span>
+                </button>
+                <button data-view="routes-view" class="flex-1 text-gray-500 p-3 text-center">
+                    <i class="fas fa-route text-xl"></i><span class="block text-xs font-medium">Routes</span>
+                </button>
+                <button data-view="fav-view" class="flex-1 text-gray-500 p-3 text-center">
+                    <i class="fas fa-star text-xl"></i><span class="block text-xs font-medium">Favourites</span>
+                </button>
+                <button data-view="profile-view" class="flex-1 text-gray-500 p-3 text-center">
+                    <i class="fas fa-user-circle text-xl"></i><span class="block text-xs font-medium">Profile</span>
+                </button>
+            </nav>
+        </footer>
+
+        <!-- ===== Bottom Sheet Popup ===== -->
+        <div id="bottom-sheet" class="bottom-sheet fixed bottom-0 left-0 right-0 max-w-md mx-auto p-4 bg-white rounded-t-2xl shadow-lg z-30">
+            <div class="w-12 h-1.5 bg-gray-300 rounded-full mx-auto mb-4"></div>
+            <h3 id="bottom-sheet-title" class="text-lg font-bold mb-2">Stop Name</h3>
+            <ul id="bottom-sheet-bus-list" class="space-y-2"></ul>
+            <button onclick="hideBottomSheet()" class="w-full mt-4 bg-gray-200 text-gray-800 py-2 rounded-lg font-semibold">Close</button>
+        </div>
+        
+        <!-- Overlays -->
+        <div id="bottom-sheet-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-20 hidden" onclick="hideBottomSheet()"></div>
+        <div id="loading-overlay" class="fixed inset-0 bg-white bg-opacity-90 z-50 flex flex-col items-center justify-center">
+            <i class="fas fa-spinner fa-spin text-blue-500 text-4xl"></i>
+            <p id="loading-text" class="text-gray-700 mt-4 font-semibold">Initializing App...</p>
+        </div>
+    </div>
+
+<script>
+// =================================================================================
+// App State & Configuration
+// =================================================================================
+const AppState = {
+    gtfs: {}, // Will hold all static data like routes, stops, trips
+    realtime: [], // Will hold simulated live bus data
+    currentView: 'map-view',
+    userLocation: { lat: 3.1390, lon: 101.6869 } // Mock user location (KL)
+};
+
+// =================================================================================
+// Initialization
+// =================================================================================
+document.addEventListener('DOMContentLoaded', initApp);
+
+/**
+ * Initializes the application, fetches data, and sets up intervals.
+ */
+async function initApp() {
+    setupEventListeners();
+    try {
+        updateLoadingText('Downloading bus routes & stops...');
+        await fetchStaticData();
+        
+        updateLoadingText('Getting live bus locations...');
+        await fetchRealtimeData(); // Initial fetch
+        
+        renderMapIcons();
+
+        // Simulate live updates every 15 seconds
+        setInterval(async () => {
+            await fetchRealtimeData();
+            if (AppState.currentView === 'map-view') {
+                renderMapIcons();
+            }
+        }, 15000);
+
+        // Hide loading overlay
+        document.getElementById('loading-overlay').style.opacity = 0;
+        setTimeout(() => document.getElementById('loading-overlay').style.display = 'none', 300);
+
+    } catch (error) {
+        console.error("Initialization failed:", error);
+        updateLoadingText(`Error: ${error.message}. Please refresh.`);
+    }
+}
+
+// =================================================================================
+// Data Fetching & Processing
+// =================================================================================
+
+/**
+ * Fetches and processes the GTFS static data from the data.gov.my API.
+ * It downloads a ZIP file, unzips it in memory, and parses the relevant CSV files.
+ */
+async function fetchStaticData() {
+    const response = await fetch('https://api.data.gov.my/gtfs-static/prasarana?category=rapid-bus-kl');
+    if (!response.ok) throw new Error('Failed to download static data');
+    
+    const blob = await response.blob();
+    const jszip = new JSZip();
+    const zip = await jszip.loadAsync(blob);
+
+    const filesToParse = ['routes.txt', 'stops.txt', 'trips.txt'];
+    for (const filename of filesToParse) {
+        const file = zip.file(filename);
+        if (file) {
+            const content = await file.async('string');
+            const parsed = Papa.parse(content, { header: true, skipEmptyLines: true });
+            AppState.gtfs[filename.replace('.txt', '')] = parsed.data;
+        }
+    }
+    // Basic data validation
+    if (!AppState.gtfs.routes || !AppState.gtfs.stops) {
+        throw new Error('Static data is missing required files.');
+    }
+}
+
+/**
+ * Fetches real-time data.
+ * IMPORTANT: The actual API returns Protobuf format, which can't be parsed easily in a browser
+ * without a build step. This function simulates the fetch and then generates MOCK data.
+ */
+async function fetchRealtimeData() {
+    // In a real app, you would parse the Protobuf response here.
+    // For now, we generate random mock data based on the static routes.
+    AppState.realtime = AppState.gtfs.routes.slice(0, 20).map(route => ({
+        routeId: route.route_id,
+        routeShortName: route.route_short_name,
+        lat: AppState.userLocation.lat + (Math.random() - 0.5) * 0.1,
+        lon: AppState.userLocation.lon + (Math.random() - 0.5) * 0.1,
+        eta: Math.floor(Math.random() * 20) + 1,
+        nextStop: 'Simulated Next Stop'
+    }));
+}
+
+// =================================================================================
+// UI Rendering Functions
+// =================================================================================
+
+/**
+ * Renders icons on the main map view.
+ */
+function renderMapIcons() {
+    const container = document.getElementById('map-icons');
+    container.innerHTML = ''; // Clear old icons
+
+    // User's Position
+    const userIcon = document.createElement('div');
+    userIcon.className = 'absolute';
+    userIcon.style.cssText = 'top: 50%; left: 50%; transform: translate(-50%, -50%);';
+    userIcon.innerHTML = `<div class="w-5 h-5 bg-blue-500 rounded-full border-4 border-white shadow-md" title="Your Location"></div>`;
+    container.appendChild(userIcon);
+
+    // Render a few bus stops
+    AppState.gtfs.stops.slice(0, 5).forEach(stop => {
+        const stopEl = document.createElement('button');
+        stopEl.className = 'absolute p-1';
+        // Position randomly for demo purposes
+        stopEl.style.top = `${40 + Math.random() * 20}%`;
+        stopEl.style.left = `${40 + Math.random() * 20}%`;
+        stopEl.innerHTML = `<i class="fas fa-map-marker-alt text-red-500 text-2xl drop-shadow"></i>`;
+        stopEl.onclick = () => showBottomSheet(stop);
+        container.appendChild(stopEl);
+    });
+
+    // Render buses
+    AppState.realtime.forEach(bus => {
+        const busEl = document.createElement('button');
+        busEl.className = 'absolute p-1';
+        // Position based on simulated lat/lon
+        busEl.style.top = `${50 - (bus.lat - AppState.userLocation.lat) * 500}%`;
+        busEl.style.left = `${50 + (bus.lon - AppState.userLocation.lon) * 500}%`;
+        busEl.innerHTML = `<div class="p-2 bg-blue-600 rounded-full shadow-xl"><i class="fas fa-bus text-white"></i></div>`;
+        busEl.onclick = () => renderRouteDetails(bus.routeId);
+        container.appendChild(busEl);
+    });
+}
+
+/**
+ * Renders search results in the search view.
+ * @param {string} query - The search term.
+ */
+function renderSearchResults(query) {
+    const list = document.getElementById('search-results-list');
+    list.innerHTML = '';
+    if (!query) {
+        showView('map-view');
+        return;
+    }
+    
+    showView('search-view');
+    const results = AppState.gtfs.routes.filter(r => r.route_short_name.includes(query));
+
+    if (results.length === 0) {
+        list.innerHTML = `<p class="text-gray-500 text-center">No routes found for "${query}".</p>`;
+        return;
+    }
+
+    results.forEach(route => {
+        const liveInfo = AppState.realtime.find(b => b.routeId === route.route_id);
+        const card = document.createElement('div');
+        card.className = 'bg-white rounded-lg shadow p-4';
+        card.innerHTML = `
+            <div class="flex justify-between items-center">
+                <div>
+                    <h3 class="text-lg font-bold">Bus ${route.route_short_name}</h3>
+                    <p class="text-sm text-gray-500">${route.route_long_name}</p>
+                    <p class="text-sm text-green-600 font-semibold">
+                        ${liveInfo ? `ETA to nearest stop: <strong>${liveInfo.eta} min</strong>` : 'No live data'}
+                    </p>
+                </div>
+                <button class="text-gray-500 p-2" onclick="toggleAccordion(this)">
+                    <i class="fas fa-chevron-down transition-transform"></i>
+                </button>
+            </div>
+            <div class="stops-accordion mt-2 border-t pt-2">
+                <!-- Stop list will be lazy-loaded on expand -->
+            </div>
+            <button class="w-full mt-3 bg-blue-600 text-white py-2 rounded-lg font-semibold" onclick="renderRouteDetails('${route.route_id}')">View Live Route</button>
+        `;
+        list.appendChild(card);
+    });
+}
+
+/**
+ * Renders the detailed view for a specific route.
+ * @param {string} routeId - The ID of the route to display.
+ */
+function renderRouteDetails(routeId) {
+    const route = AppState.gtfs.routes.find(r => r.route_id === routeId);
+    const liveInfo = AppState.realtime.find(b => b.routeId === routeId);
+    if (!route) return;
+
+    // Update bus info
+    document.getElementById('detail-bus-info').innerHTML = `
+        <h3 class="text-xl font-bold">Bus ${route.route_short_name}</h3>
+        <p class="text-gray-600">Next Stop: <span class="font-semibold text-black">${liveInfo ? liveInfo.nextStop : 'N/A'}</span></p>
+        <p class="text-green-600 font-bold">ETA: ${liveInfo ? `${liveInfo.eta} min` : 'N/A'}</p>
+    `;
+
+    // Update stop list
+    const stopList = document.getElementById('detail-stop-list');
+    stopList.innerHTML = '<p class="text-gray-400">Loading stops...</p>';
+    
+    // Find stops for this route (this is a simplified approach)
+    const trip = AppState.gtfs.trips.find(t => t.route_id === routeId);
+    if (trip) {
+        // In a real app, you'd get stop_times for the trip_id, then join with stops.
+        // For this demo, we'll just show a subset of all stops.
+        stopList.innerHTML = AppState.gtfs.stops.slice(0, 15).map((stop, index) => {
+            const isNearest = index === 3; // Mock nearest stop
+            return `
+                <li class="flex items-center justify-between p-2 rounded-lg ${isNearest ? 'bg-blue-100' : ''}">
+                    <div>
+                        <i class="fas fa-map-marker-alt mr-3 ${isNearest ? 'text-blue-600' : 'text-red-500'}"></i>
+                        <span class="font-medium ${isNearest ? 'text-blue-700' : 'text-gray-800'}">${stop.stop_name}</span>
+                    </div>
+                </li>
+            `;
+        }).join('');
+    } else {
+        stopList.innerHTML = '<p class="text-red-500">Could not find stop list for this route.</p>';
+    }
+
+    showView('detail-view');
+}
+
+// =================================================================================
+// UI Interaction & Event Handlers
+// =================================================================================
+
+/**
+ * Sets up all the main event listeners for the app.
+ */
+function setupEventListeners() {
+    const searchInput = document.getElementById('search-input');
+    searchInput.addEventListener('input', (e) => renderSearchResults(e.target.value));
+    searchInput.addEventListener('focus', (e) => renderSearchResults(e.target.value));
+
+    document.getElementById('bottom-nav').addEventListener('click', (e) => {
+        const button = e.target.closest('button');
+        if (button && button.dataset.view) {
+            // Reset search if navigating away
+            if (AppState.currentView === 'search-view') searchInput.value = '';
+            
+            showView(button.dataset.view);
+            
+            // Update active style on nav
+            document.querySelectorAll('#bottom-nav button').forEach(btn => btn.classList.replace('text-blue-600', 'text-gray-500'));
+            button.classList.replace('text-gray-500', 'text-blue-600');
+        }
+    });
+}
+
+/**
+ * Shows a specific view and hides others.
+ * @param {string} viewId - The ID of the view element to show.
+ */
+function showView(viewId) {
+    if (!document.getElementById(viewId)) {
+        alert(`View "${viewId}" not found. Feature not implemented.`);
+        return;
+    }
+    document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
+    document.getElementById(viewId).classList.add('active');
+    AppState.currentView = viewId;
+}
+
+/**
+ * Shows the bottom sheet with info for a given stop.
+ * @param {object} stop - The stop object from GTFS data.
+ */
+function showBottomSheet(stop) {
+    document.getElementById('bottom-sheet-title').textContent = stop.stop_name;
+    const busList = document.getElementById('bottom-sheet-bus-list');
+    busList.innerHTML = AppState.realtime
+        .slice(0, 3) // Show 3 mock arriving buses
+        .map(bus => `
+            <li><i class="fas fa-bus text-blue-500 mr-2"></i> ${bus.routeShortName} 
+                <span class="float-right font-semibold text-green-600">${bus.eta} min</span>
+            </li>
+        `).join('');
+
+    document.getElementById('bottom-sheet').classList.add('active');
+    document.getElementById('bottom-sheet-overlay').classList.remove('hidden');
+}
+
+/**
+ * Hides the bottom sheet.
+ */
+function hideBottomSheet() {
+    document.getElementById('bottom-sheet').classList.remove('active');
+    document.getElementById('bottom-sheet-overlay').classList.add('hidden');
+}
+
+/**
+ * Toggles the accordion display for stop lists in search results.
+ * @param {HTMLElement} button - The button element that was clicked.
+ */
+function toggleAccordion(button) {
+    const icon = button.querySelector('i');
+    const accordion = button.parentElement.nextElementSibling;
+    icon.classList.toggle('rotate-180');
+    accordion.classList.toggle('open');
+    
+    // Lazy load stop list content
+    if (accordion.classList.contains('open') && accordion.innerHTML === '') {
+        accordion.innerHTML = `<ul class="space-y-1 text-sm text-gray-600">${AppState.gtfs.stops.slice(0,5).map(s => `<li>- ${s.stop_name}</li>`).join('')}</ul>`;
+    }
+}
+
+/**
+ * Updates the text on the loading overlay.
+ * @param {string} text - The text to display.
+ */
+function updateLoadingText(text) {
+    document.getElementById('loading-text').textContent = text;
+}
+
+</script>
+</body>
+</html>
